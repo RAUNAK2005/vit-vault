@@ -32,17 +32,35 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
   }, [folderId, isOpen])
 
   const fetchFolderDetails = async () => {
+    let folderData = null;
+    
+    // Try to fetch with collaborators first
     const { data, error } = await supabase
       .from('events')
-      .select('title, type, created_by')
+      .select('title, type, created_by, collaborators')
       .eq('id', folderId)
       .single()
-    
-    if (data) {
-      setEventName(data.title)
-      setEventType(data.type)
       
-      if (data.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in') {
+    if (error && error.message.includes('collaborators')) {
+      const fallback = await supabase
+        .from('events')
+        .select('title, type, created_by')
+        .eq('id', folderId)
+        .single()
+      folderData = fallback.data;
+    } else if (data) {
+      folderData = data;
+    }
+    
+    if (folderData) {
+      setEventName(folderData.title)
+      setEventType(folderData.type)
+      
+      const isCreator = folderData.created_by === user.id;
+      const isAdmin = user.email === 'raunak.baweja@vit.edu.in';
+      const isCollaborator = folderData.collaborators?.includes(user?.email?.toLowerCase());
+
+      if (!isCreator && !isAdmin && !isCollaborator) {
         setErrorMsg("You don't have permission to add images to this folder.")
       }
     }
@@ -74,15 +92,25 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
       let eventId = folderId;
       
       if (!eventId) {
-        const { data: existing } = await supabase
+        let existing = null;
+        const { data: extData, error: extErr } = await supabase
           .from('events')
-          .select('id, created_by')
+          .select('id, created_by, collaborators')
           .eq('title', eventName)
           .eq('type', eventType)
           .limit(1)
+          
+        if (extErr && extErr.message.includes('collaborators')) {
+          const fb = await supabase.from('events').select('id, created_by').eq('title', eventName).eq('type', eventType).limit(1)
+          existing = fb.data;
+        } else if (extData) {
+          existing = extData;
+        }
 
         if (existing && existing.length > 0) {
-          if (existing[0].created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in') {
+          const f = existing[0];
+          const isCollaborator = f.collaborators?.includes(user?.email?.toLowerCase());
+          if (f.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in' && !isCollaborator) {
             throw new Error("A folder with this name already exists and belongs to another user.")
           }
           eventId = existing[0].id
@@ -104,14 +132,25 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         }
       } else {
         // Double check ownership for existing folderId
-        const { data: folder } = await supabase
+        let doubleCheck = null;
+        const { data: folderInfo, error: dcErr } = await supabase
           .from('events')
-          .select('created_by')
+          .select('created_by, collaborators')
           .eq('id', eventId)
           .single()
+          
+        if (dcErr && dcErr.message.includes('collaborators')) {
+           const dcFall = await supabase.from('events').select('created_by').eq('id', eventId).single()
+           doubleCheck = dcFall.data;
+        } else if (folderInfo) {
+           doubleCheck = folderInfo;
+        }
         
-        if (folder.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in') {
-          throw new Error("You don't have permission to modify this folder.")
+        if (doubleCheck) {
+          const isCollaborator = doubleCheck.collaborators?.includes(user?.email?.toLowerCase());
+          if (doubleCheck.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in' && !isCollaborator) {
+            throw new Error("You don't have permission to modify this folder.")
+          }
         }
       }
 

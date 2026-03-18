@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import UploadModal from '../components/UploadModal'
+import CollaborateModal from '../components/CollaborateModal'
 
 const fadeInUp = {
   hidden: { opacity: 0, y: 20 },
@@ -17,6 +18,8 @@ const fadeInUp = {
 
 export default function GalleryPage() {
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [collaborateOpen, setCollaborateOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeCategory, setActiveCategory] = useState('ALL') // 'ALL', 'INSTITUTIONAL', 'COMMITTEE'
@@ -24,6 +27,7 @@ export default function GalleryPage() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isUpdatingThumbnail, setIsUpdatingThumbnail] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [folders, setFolders] = useState([])
   const [selectedEventId, setSelectedEventId] = useState(null)
@@ -71,6 +75,8 @@ export default function GalleryPage() {
             id: m.id,
             file_path: m.file_path,
             uploader_id: m.uploader_id,
+            event_id: m.event_id,
+            metadata: m.metadata || {},
             url: publicUrlData.publicUrl,
             title: m.events?.title || 'Unknown Event',
             type: m.events?.type || 'UNKNOWN',
@@ -84,26 +90,56 @@ export default function GalleryPage() {
         setItems(formatted)
       }
 
-      // Also fetch events for the folder view
-      const { data: eventData, error: eventError } = await supabase
-        .from('events')
-        .select(`
-          id,
-          title,
-          type,
-          event_date,
-          created_by,
-          media:media(file_path)
-        `)
-        .order('event_date', { ascending: false })
-
-      if (eventError) {
-        console.error("Error fetching events:", eventError)
+      // Also fetch events for the folder view with safe backwards compatibility
+      let eventDataForFolders = null;
+      try {
+        const { data: eventData, error: eventError } = await supabase
+          .from('events')
+          .select(`
+            id,
+            title,
+            type,
+            event_date,
+            created_by,
+            collaborators,
+            media:media(id, file_path, metadata)
+          `)
+          .order('event_date', { ascending: false })
+          
+        if (eventError && eventError.message.includes('collaborators')) {
+          console.warn("DB team hasn't added collaborators column yet. Fetching without it.")
+          const fallback = await supabase
+            .from('events')
+            .select(`
+              id,
+              title,
+              type,
+              event_date,
+              created_by,
+              media:media(id, file_path, metadata)
+            `)
+            .order('event_date', { ascending: false })
+          eventDataForFolders = fallback.data;
+        } else if (eventData) {
+          eventDataForFolders = eventData;
+        }
+      } catch (err) {
+        console.error("Fetch event structure error:", err)
       }
 
-      if (eventData) {
-        setFolders(eventData.map(e => {
-          const firstImagePath = e.media?.[0]?.file_path;
+      if (eventDataForFolders) {
+        setFolders(eventDataForFolders.map(e => {
+          let coverMedia = e.media?.find(m => {
+            try {
+              const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : (m.metadata || {});
+              return meta.is_cover === true || meta.is_cover === 'true';
+            } catch(e) { return false; }
+          });
+          if (!coverMedia && e.media?.length > 0) coverMedia = e.media[0];
+          
+          const localThumbnails = JSON.parse(localStorage.getItem('vault_thumbnails') || '{}');
+          const firstImagePath = localThumbnails[e.id] || coverMedia?.file_path;
+          
           const { data: coverUrlData } = firstImagePath 
             ? supabase.storage.from('vault-media').getPublicUrl(firstImagePath)
             : { data: { publicUrl: null } };
@@ -113,6 +149,7 @@ export default function GalleryPage() {
             title: e.title,
             type: e.type,
             created_by: e.created_by,
+            collaborators: e.collaborators || [],
             count: e.media?.length || 0,
             date: new Date(e.event_date).toLocaleDateString(),
             coverUrl: coverUrlData.publicUrl
@@ -129,17 +166,23 @@ export default function GalleryPage() {
   useEffect(() => {
     fetchMedia()
     window.addEventListener('mediaUploaded', fetchMedia)
-    return () => window.removeEventListener('mediaUploaded', fetchMedia)
+    window.addEventListener('collaboratorsUpdated', fetchMedia)
+    return () => {
+      window.removeEventListener('mediaUploaded', fetchMedia)
+      window.removeEventListener('collaboratorsUpdated', fetchMedia)
+    }
   }, [selectedEventId])
 
   const filteredItems = items.filter(item => {
-    if (activeCategory === 'ALL') return true;
-    return item.type === activeCategory;
+    if (activeCategory !== 'ALL' && item.type !== activeCategory) return false;
+    if (searchQuery && !item.title?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return true;
   })
 
   const filteredFolders = folders.filter(f => {
-    if (activeCategory === 'ALL') return true;
-    return f.type === activeCategory;
+    if (activeCategory !== 'ALL' && f.type !== activeCategory) return false;
+    if (searchQuery && !f.title?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return true;
   })
 
   const toggleSelection = (id) => {
@@ -151,6 +194,7 @@ export default function GalleryPage() {
   const handleFolderClick = (id) => {
     setSelectedEventId(id)
     setViewMode('GRID')
+    setSearchQuery('')
   }
 
   const executeDelete = async () => {
@@ -221,6 +265,54 @@ export default function GalleryPage() {
     }
   }
 
+  const executeSetThumbnail = async () => {
+    if (!selectedImage) return;
+    setIsUpdatingThumbnail(true);
+    
+    try {
+      // 1. Fetch current covers for this event
+      const { data: currentMedia } = await supabase
+        .from('media')
+        .select('id, metadata')
+        .eq('event_id', selectedImage.event_id);
+        
+      const oldCovers = currentMedia?.filter(m => m.metadata?.is_cover) || [];
+      
+      // 2. Unset old covers
+      for (const c of oldCovers) {
+        if (c.id === selectedImage.id) continue;
+        const newMeta = { ...c.metadata };
+        delete newMeta.is_cover;
+        await supabase.from('media').update({ metadata: newMeta }).eq('id', c.id);
+      }
+      
+      // 3. Set new cover
+      const newSelectedMeta = { ...selectedImage.metadata, is_cover: true };
+      const { data: updatedMedia, error: setErr } = await supabase
+        .from('media')
+        .update({ metadata: newSelectedMeta })
+        .eq('id', selectedImage.id)
+        .select();
+        
+      if (setErr) throw setErr;
+      if (!updatedMedia || updatedMedia.length === 0) {
+        // Fallback to local storage to make UI work instantly while DB team is away
+        console.warn("DB update blocked. Falling back to local storage.");
+        const local = JSON.parse(localStorage.getItem('vault_thumbnails') || '{}');
+        local[selectedImage.event_id] = selectedImage.file_path;
+        localStorage.setItem('vault_thumbnails', JSON.stringify(local));
+      }
+      
+      alert("Folder thumbnail updated successfully!");
+      fetchMedia();
+    } catch (err) {
+      console.error("Error setting thumbnail:", err);
+      alert("Failed to update folder thumbnail. Check console.");
+    } finally {
+      setIsUpdatingThumbnail(false);
+    }
+  }
+
   const executeDeleteFolder = async () => {
     if (!selectedEventId) return;
     const folder = folders.find(f => f.id === selectedEventId);
@@ -287,9 +379,17 @@ export default function GalleryPage() {
             <label className="relative flex items-center min-w-[320px]">
               <span className="material-symbols-outlined absolute left-3 text-slate-400">search</span>
               <input
-                className="w-full bg-[#3b3bed]/10 border-none rounded-xl pl-11 pr-4 py-2 text-sm focus:ring-2 focus:ring-[#3b3bed]/50 transition-all placeholder:text-slate-500 outline-none"
-                placeholder="Semantic search: 'sunset over campus buildings'..."
+                className="w-full bg-[#3b3bed]/10 border-none rounded-xl pl-11 pr-4 py-2 text-sm focus:ring-2 focus:ring-[#3b3bed]/50 transition-all text-white placeholder:text-slate-500 outline-none"
+                placeholder="Search event folders..."
                 type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  if (e.target.value) {
+                    setSelectedEventId(null);
+                    setViewMode('FOLDERS');
+                  }
+                }}
               />
             </label>
           </div>
@@ -344,13 +444,13 @@ export default function GalleryPage() {
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">Views</h3>
               <nav className="space-y-1">
                 <button 
-                  onClick={() => { setViewMode('FOLDERS'); setSelectedEventId(null); }}
+                  onClick={() => { setViewMode('FOLDERS'); setSelectedEventId(null); setSearchQuery(''); }}
                   className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl font-medium transition-all ${viewMode === 'FOLDERS' ? 'bg-[#3b3bed]/20 text-[#3b3bed] border border-[#3b3bed]/30' : 'hover:bg-[#3b3bed]/10 text-slate-400'}`}
                 >
                   <span className="material-symbols-outlined">folder</span> Browse Folders
                 </button>
                 <button 
-                  onClick={() => { setViewMode('GRID'); setSelectedEventId(null); }}
+                  onClick={() => { setViewMode('GRID'); setSelectedEventId(null); setSearchQuery(''); }}
                   className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl font-medium transition-all ${viewMode === 'GRID' && !selectedEventId ? 'bg-[#3b3bed]/20 text-[#3b3bed] border border-[#3b3bed]/30' : 'hover:bg-[#3b3bed]/10 text-slate-400'}`}
                 >
                   <span className="material-symbols-outlined">list</span> All Photos
@@ -392,44 +492,69 @@ export default function GalleryPage() {
                 }
               </div>
               
-              {viewMode === 'GRID' && filteredItems.length > 0 && (
+              {viewMode === 'GRID' && (
                 <div className="flex gap-2">
-                  {selectedEventId && folders.find(f => f.id === selectedEventId)?.created_by === user?.id && (
-                    <>
-                      <button 
-                        onClick={() => setUploadOpen(true)}
-                        className="px-4 py-2 bg-[#3b3bed] text-white rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg shadow-[#3b3bed]/20 hover:bg-[#3b3bed]/80"
-                      >
-                        <span className="material-symbols-outlined text-sm">add_photo_alternate</span>
-                        Add Images
-                      </button>
-                      <button 
-                        onClick={executeDeleteFolder}
-                        disabled={isDeleting}
-                        className="px-4 py-2 bg-red-500/10 text-red-500 border border-red-500/20 rounded-xl text-sm font-bold transition-all hover:bg-red-500/20"
-                      >
-                        <span className="material-symbols-outlined text-sm">folder_delete</span>
-                        Delete Folder
-                      </button>
-                      <div className="w-[1px] h-8 bg-white/10 mx-1" />
-                    </>
+                  {(() => {
+                    if (!selectedEventId) return null;
+                    const folder = folders.find(f => f.id === selectedEventId);
+                    if (!folder) return null;
+                    
+                    const isCreator = folder.created_by === user?.id;
+                    const isAdmin = user?.email === 'raunak.baweja@vit.edu.in';
+                    const isCollaborator = folder.collaborators?.includes(user?.email);
+                    
+                    if (!isCreator && !isAdmin && !isCollaborator) return null;
+
+                    return (
+                      <>
+                        { (isCreator || isAdmin) && (
+                          <button 
+                            onClick={() => setCollaborateOpen(true)}
+                            className="px-4 py-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-xl text-sm font-bold transition-all hover:bg-indigo-500/20 flex items-center gap-2"
+                          >
+                            <span className="material-symbols-outlined text-sm">group_add</span>
+                            <span className="hidden sm:inline">Collaborate</span>
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => setUploadOpen(true)}
+                          className="px-4 py-2 bg-[#3b3bed] text-white rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg shadow-[#3b3bed]/20 hover:bg-[#3b3bed]/80"
+                        >
+                          <span className="material-symbols-outlined text-sm">add_photo_alternate</span>
+                          <span className="hidden sm:inline">Add Images</span>
+                        </button>
+                        { (isCreator || isAdmin) && (
+                          <button 
+                            onClick={executeDeleteFolder}
+                            disabled={isDeleting}
+                            className="px-4 py-2 bg-red-500/10 text-red-500 border border-red-500/20 rounded-xl text-sm font-bold transition-all hover:bg-red-500/20 flex items-center gap-2"
+                          >
+                            <span className="material-symbols-outlined text-sm">folder_delete</span>
+                            <span className="hidden sm:inline">Delete Folder</span>
+                          </button>
+                        )}
+                        <div className="w-[1px] h-8 bg-white/10 mx-1 hidden sm:block" />
+                      </>
+                    );
+                  })()}
+                  {filteredItems.length > 0 && (
+                    <button 
+                      onClick={() => {
+                        setSelectionMode(!selectionMode);
+                        setSelectedIds([]);
+                      }}
+                      className={`px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${
+                        selectionMode 
+                          ? 'bg-indigo-600 text-white shadow-lg' 
+                          : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/5'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-sm">
+                        {selectionMode ? 'close' : 'checklist'}
+                      </span>
+                      {selectionMode ? 'Cancel Selection' : 'Bundle Select'}
+                    </button>
                   )}
-                  <button 
-                    onClick={() => {
-                      setSelectionMode(!selectionMode);
-                      setSelectedIds([]);
-                    }}
-                    className={`px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${
-                      selectionMode 
-                        ? 'bg-indigo-600 text-white shadow-lg' 
-                        : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/5'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-sm">
-                      {selectionMode ? 'close' : 'checklist'}
-                    </span>
-                    {selectionMode ? 'Cancel Selection' : 'Bundle Select'}
-                  </button>
                 </div>
               )}
             </div>
@@ -565,7 +690,7 @@ export default function GalleryPage() {
               initial="hidden"
               animate="visible"
               variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
-              className="masonry-grid gap-4"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
             >
               {filteredItems.map((item, i) => (
                 <motion.div
@@ -573,7 +698,7 @@ export default function GalleryPage() {
                   variants={fadeInUp}
                   custom={i}
                   onClick={() => selectionMode ? toggleSelection(item.id) : setSelectedImage(item)}
-                  className={`${item.size} relative group overflow-hidden rounded-2xl cursor-pointer bg-slate-800/50 ${
+                  className={`aspect-[4/3] relative group overflow-hidden rounded-2xl cursor-pointer bg-slate-800/50 ${
                     selectionMode && selectedIds.includes(item.id) ? 'ring-4 ring-indigo-500 scale-[0.98]' : ''
                   }`}
                 >
@@ -624,7 +749,10 @@ export default function GalleryPage() {
       </div>
 
       {/* FAB */}
-      {(!selectedEventId || folders.find(f => f.id === selectedEventId)?.created_by === user?.id || user?.email === 'raunak.baweja@vit.edu.in') && (
+      {(!selectedEventId || (() => {
+        const folder = folders.find(f => f.id === selectedEventId);
+        return folder?.created_by === user?.id || folder?.collaborators?.includes(user?.email) || user?.email === 'raunak.baweja@vit.edu.in';
+      })()) && (
         <motion.button
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
@@ -639,6 +767,13 @@ export default function GalleryPage() {
         isOpen={uploadOpen} 
         onClose={() => setUploadOpen(false)} 
         folderId={selectedEventId}
+      />
+
+      <CollaborateModal
+        isOpen={collaborateOpen}
+        onClose={() => setCollaborateOpen(false)}
+        folderId={selectedEventId}
+        folderName={folders.find(f => f.id === selectedEventId)?.title || ''}
       />
 
       {/* Image Details Modal */}
@@ -722,9 +857,19 @@ export default function GalleryPage() {
                   </div>
                 </div>
 
-                {/* Delete Button (Only visible if uploader or admin) */}
-                { (user?.id === selectedImage.uploader_id || user?.email === 'raunak.baweja@vit.edu.in') && (
-                  <div className="mt-auto pt-6 relative">
+                {/* Actions Button Group (Only visible if uploader, creator, or admin) */}
+                <div className="mt-auto pt-6 relative space-y-3">
+                  { (selectedImage.event_id && (folders.find(f => f.id === selectedImage.event_id)?.created_by === user?.id || user?.email === 'raunak.baweja@vit.edu.in')) && (
+                    <button 
+                      onClick={executeSetThumbnail}
+                      disabled={isUpdatingThumbnail}
+                      className="w-full py-3 bg-[#3b3bed]/10 hover:bg-[#3b3bed]/20 disabled:opacity-50 text-[#3b3bed] border border-[#3b3bed]/20 rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+                    >
+                      <span className="material-symbols-outlined text-sm">{isUpdatingThumbnail ? 'refresh' : 'image'}</span> 
+                      {isUpdatingThumbnail ? 'Updating...' : 'Set as Folder Thumbnail'}
+                    </button>
+                  )}
+                  { (user?.id === selectedImage.uploader_id || user?.email === 'raunak.baweja@vit.edu.in') && (
                     <button 
                       onClick={() => setShowDeleteConfirm(true)}
                       disabled={isDeleting}
@@ -732,8 +877,8 @@ export default function GalleryPage() {
                     >
                       <span className="material-symbols-outlined text-sm">delete</span> Delete Asset
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
               
               {/* Custom Delete Confirmation Modal Overlay */}

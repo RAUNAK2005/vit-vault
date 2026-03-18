@@ -46,7 +46,7 @@ export default function LandingPage() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="relative min-h-screen flex flex-col"
+      className="relative min-h-screen flex flex-col bg-slate-50 dark:bg-[#0a0a14] text-slate-900 dark:text-white transition-colors duration-300"
     >
       {/* Background Accents */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[800px] hero-gradient pointer-events-none" />
@@ -71,10 +71,10 @@ export default function LandingPage() {
               <span className="text-gradient">VIT Media Vault</span>
             </motion.h1>
 
-            <motion.p variants={fadeInUp} custom={2} className="text-base md:text-lg text-slate-400 mb-3 max-w-2xl mx-auto font-light">
+            <motion.p variants={fadeInUp} custom={2} className="text-base md:text-lg text-slate-600 dark:text-slate-400 mb-3 max-w-2xl mx-auto font-light">
               The ultimate AI-powered ecosystem for university memories at
             </motion.p>
-            <motion.p variants={fadeInUp} custom={2.5} className="text-lg md:text-xl text-slate-300 mb-10 max-w-2xl mx-auto font-semibold tracking-wide">
+            <motion.p variants={fadeInUp} custom={2.5} className="text-lg md:text-xl text-slate-700 dark:text-slate-300 mb-10 max-w-2xl mx-auto font-semibold tracking-wide">
               Vidyalankar Institute of Technology
             </motion.p>
 
@@ -87,7 +87,7 @@ export default function LandingPage() {
               </Link>
               <Link
                 to="/gallery"
-                className="w-full sm:w-auto glass hover:bg-white/10 font-bold py-4 px-10 rounded-xl transition-all"
+                className="w-full sm:w-auto glass hover:bg-slate-200 dark:hover:bg-white/10 font-bold py-4 px-10 rounded-xl transition-all text-slate-900 dark:text-white"
               >
                 View Showcase
               </Link>
@@ -113,7 +113,7 @@ export default function LandingPage() {
                 <span className="material-symbols-outlined text-[#3b3bed] text-4xl">{stat.icon}</span>
                 <div className="text-center">
                   <p className="text-3xl font-black">{stat.value}</p>
-                  <p className="text-sm text-slate-400 font-medium uppercase tracking-widest">{stat.label}</p>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 font-medium uppercase tracking-widest">{stat.label}</p>
                 </div>
               </motion.div>
             ))}
@@ -121,7 +121,7 @@ export default function LandingPage() {
         </section>
 
         {/* Gallery Preview */}
-        <section id="events" className="py-24 px-6 lg:px-20 bg-slate-900/20">
+        <section id="events" className="py-24 px-6 lg:px-20 bg-slate-200/50 dark:bg-slate-900/20 transition-colors duration-300">
           <div className="max-w-7xl mx-auto">
             <motion.div
               initial="hidden"
@@ -132,7 +132,7 @@ export default function LandingPage() {
             >
               <div>
                 <motion.h2 variants={fadeInUp} className="text-3xl md:text-4xl font-bold mb-4">Capturing the Essence</motion.h2>
-                <motion.p variants={fadeInUp} custom={1} className="text-slate-400 max-w-lg">
+                <motion.p variants={fadeInUp} custom={1} className="text-slate-600 dark:text-slate-400 max-w-lg">
                   Explore high-quality captures from across the Vidyalankar campus, sorted by our intelligent AI engine.
                 </motion.p>
               </div>
@@ -192,7 +192,7 @@ export default function LandingPage() {
               <motion.h2 variants={fadeInUp} custom={1} className="text-3xl md:text-5xl font-bold mb-4">
                 Intelligence Built In
               </motion.h2>
-              <motion.p variants={fadeInUp} custom={2} className="text-slate-400 max-w-2xl mx-auto">
+              <motion.p variants={fadeInUp} custom={2} className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
                 Every photo uploaded to VIT Media Vault is processed by our AI pipeline — auto-tagged, quality-checked, and indexed for semantic search.
               </motion.p>
             </motion.div>
@@ -216,7 +216,7 @@ export default function LandingPage() {
                     <span className="material-symbols-outlined text-white text-2xl">{feature.icon}</span>
                   </div>
                   <h3 className="text-xl font-bold mb-3">{feature.title}</h3>
-                  <p className="text-slate-400 text-sm leading-relaxed">{feature.desc}</p>
+                  <p className="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">{feature.desc}</p>
                 </motion.div>
               ))}
             </motion.div>
@@ -235,7 +235,7 @@ export default function LandingPage() {
             <motion.h2 variants={fadeInUp} className="text-3xl md:text-5xl font-bold mb-6">
               Ready to Preserve Your <span className="text-gradient">Campus Memories</span>?
             </motion.h2>
-            <motion.p variants={fadeInUp} custom={1} className="text-slate-400 mb-10 max-w-xl mx-auto">
+            <motion.p variants={fadeInUp} custom={1} className="text-slate-600 dark:text-slate-400 mb-10 max-w-xl mx-auto">
               Join the Vidyalankar Institute of Technology media ecosystem. Upload, search, and share with the power of AI.
             </motion.p>
             <motion.div variants={fadeInUp} custom={2} className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -247,7 +247,7 @@ export default function LandingPage() {
               </Link>
               <Link
                 to="/gallery"
-                className="glass hover:bg-white/10 font-bold py-4 px-10 rounded-xl transition-all"
+                className="glass hover:bg-slate-200 dark:hover:bg-white/10 font-bold py-4 px-10 rounded-xl transition-all text-slate-900 dark:text-white"
               >
                 Explore Gallery
               </Link>
