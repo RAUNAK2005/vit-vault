@@ -615,9 +615,41 @@ export default function GalleryPage() {
 
           {/* Content Rendering */}
           {loading ? (
-            <div className="flex justify-center items-center h-64">
-              <span className="material-symbols-outlined text-[#3b3bed] text-4xl animate-spin">refresh</span>
-            </div>
+            viewMode === 'FOLDERS' && !selectedEventId ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                {[...Array(8)].map((_, i) => (
+                  <div key={i} className="bg-white/5 border border-white/5 rounded-2xl overflow-hidden flex flex-col animate-pulse">
+                    <div className="w-full aspect-[4/3] bg-white/5" />
+                    <div className="p-5 flex justify-between items-center">
+                      <div className="space-y-3 flex-1">
+                        <div className="w-2/3 h-5 rounded-full bg-white/10" />
+                        <div className="w-1/3 h-3 rounded-full bg-white/5" />
+                      </div>
+                      <div className="w-8 h-8 rounded-full bg-white/5" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-6 space-y-6">
+                {[...Array(8)].map((_, i) => (
+                  <div 
+                    key={i} 
+                    className={`w-full rounded-2xl bg-white/5 border border-white/5 animate-pulse relative overflow-hidden
+                      ${i % 3 === 0 ? 'h-80' : i % 2 === 0 ? 'h-96' : 'h-64'}`}
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a14]/60 to-transparent" />
+                    <div className="absolute bottom-4 left-4 flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-white/10" />
+                      <div className="space-y-2">
+                         <div className="w-24 h-3 rounded-full bg-white/10" />
+                         <div className="w-16 h-2 rounded-full bg-white/5" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
           ) : viewMode === 'FOLDERS' && !selectedEventId ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
               {filteredFolders.map((folder) => (
