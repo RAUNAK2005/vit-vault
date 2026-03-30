@@ -1,0 +1,14 @@
+# Ignore everything by default
+/*
+
+# Allow these directories
+!/client/
+!/ai-service/
+!/.gitignore
+
+# Ignore dependencies & env
+ai-service/venv/
+ai-service/.env
+client/node_modules/
+__pycache__/
+*.pyc

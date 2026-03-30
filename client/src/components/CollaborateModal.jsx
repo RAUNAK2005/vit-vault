@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '../lib/supabase'
+import toast from 'react-hot-toast'
 
 export default function CollaborateModal({ isOpen, onClose, folderId, folderName }) {
   const [email, setEmail] = useState('')
@@ -106,9 +107,7 @@ export default function CollaborateModal({ isOpen, onClose, folderId, folderName
     }
   }
 
-  const handleRemove = async (emailToRemove) => {
-    if (!confirm(`Remove ${emailToRemove} from collaborators?`)) return
-    
+  const executeRemove = async (emailToRemove) => {
     setLoading(true)
     setErrorMsg('')
     try {
@@ -130,6 +129,25 @@ export default function CollaborateModal({ isOpen, onClose, folderId, folderName
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRemove = async (emailToRemove) => {
+    toast((t) => (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm">Remove <strong>{emailToRemove}</strong> from collaborators?</p>
+        <div className="flex gap-2">
+          <button 
+            className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={() => {
+              toast.dismiss(t.id);
+              executeRemove(emailToRemove);
+            }}>Remove</button>
+          <button 
+            className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={() => toast.dismiss(t.id)}>Cancel</button>
+        </div>
+      </div>
+    ), { duration: Infinity, id: 'remove-collab' });
   }
 
   if (!isOpen) return null

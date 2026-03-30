@@ -22,9 +22,24 @@ const PublicRoute = ({ children }) => {
   return children
 }
 
+import { Toaster } from 'react-hot-toast'
+
 function App() {
   return (
     <AuthProvider>
+      <Toaster 
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: '#1e1e38',
+            color: '#fff',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '12px',
+          },
+          success: { iconTheme: { primary: '#10b981', secondary: '#fff' } },
+          error: { iconTheme: { primary: '#ef4444', secondary: '#fff' } }
+        }}
+      />
       <Router>
         <AnimatePresence mode="wait">
           <Routes>

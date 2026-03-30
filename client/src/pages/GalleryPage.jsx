@@ -5,6 +5,9 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import UploadModal from '../components/UploadModal'
 import CollaborateModal from '../components/CollaborateModal'
+import { saveAs } from 'file-saver'
+import JSZip from 'jszip'
+import toast from 'react-hot-toast'
 
 const fadeInUp = {
   hidden: { opacity: 0, y: 20 },
@@ -34,6 +37,11 @@ export default function GalleryPage() {
   const [viewMode, setViewMode] = useState('GRID') // 'GRID' or 'FOLDERS'
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState([])
+  const [isDownloading, setIsDownloading] = useState(false)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editNameValue, setEditNameValue] = useState('')
+  const [isEditingDesc, setIsEditingDesc] = useState(false)
+  const [editDescValue, setEditDescValue] = useState('')
 
   const handleLogout = async () => {
     await signOut()
@@ -52,9 +60,12 @@ export default function GalleryPage() {
           created_at,
           uploader_id,
           event_id,
+          ai_tags,
+          perception_hash,
           events ( title, type ),
           users:uploader_id ( email )
         `)
+        .eq('status', 'APPROVED')
         .order('created_at', { ascending: false })
 
       if (selectedEventId) {
@@ -78,12 +89,18 @@ export default function GalleryPage() {
             event_id: m.event_id,
             metadata: m.metadata || {},
             url: publicUrlData.publicUrl,
-            title: m.events?.title || 'Unknown Event',
+            title: m.metadata?.custom_name || m.events?.title || 'Unknown Event',
+            eventTitle: m.events?.title || 'Unknown Event',
+            custom_name: m.metadata?.custom_name || '',
             type: m.events?.type || 'UNKNOWN',
             description: m.metadata?.description || 'No description provided.',
             user: m.users?.email?.split('@')[0] || 'Unknown User',
-            date: new Date(m.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' }),
+            date: m.metadata?.custom_date 
+              ? new Date(m.metadata.custom_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+              : new Date(m.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' }),
             tags: m.events?.type === 'INSTITUTIONAL' ? [{ label: 'Institutional', color: 'bg-indigo-600' }] : [{ label: 'Committee', color: 'bg-emerald-600' }],
+            aiTags: m.ai_tags || [],
+            perceptionHash: m.perception_hash || null,
             size: sizes[i % 3] // Stagger masonry sizes deterministically
           }
         })
@@ -175,7 +192,14 @@ export default function GalleryPage() {
 
   const filteredItems = items.filter(item => {
     if (activeCategory !== 'ALL' && item.type !== activeCategory) return false;
-    if (searchQuery && !item.title?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = item.title?.toLowerCase().includes(q) || item.custom_name?.toLowerCase().includes(q) || item.eventTitle?.toLowerCase().includes(q);
+      const matchDesc = item.description?.toLowerCase().includes(q);
+      const matchTags = item.aiTags?.some(tag => tag.toLowerCase().includes(q));
+      const matchManualTags = item.tags?.some(tag => tag.label.toLowerCase().includes(q));
+      if (!matchTitle && !matchDesc && !matchTags && !matchManualTags) return false;
+    }
     return true;
   })
 
@@ -195,6 +219,49 @@ export default function GalleryPage() {
     setSelectedEventId(id)
     setViewMode('GRID')
     setSearchQuery('')
+  }
+
+  const executeSaveName = async () => {
+    if (!selectedImage) return;
+    
+    try {
+      const newMeta = { ...selectedImage.metadata, custom_name: editNameValue.trim() };
+      const { error } = await supabase.from('media').update({ metadata: newMeta }).eq('id', selectedImage.id);
+      
+      if (error) throw error;
+      
+      const newTitle = editNameValue.trim() || selectedImage.eventTitle;
+      const updatedImage = { ...selectedImage, metadata: newMeta, custom_name: editNameValue.trim(), title: newTitle };
+      
+      setSelectedImage(updatedImage);
+      setItems(items.map(item => item.id === selectedImage.id ? updatedImage : item));
+      setIsEditingName(false);
+      toast.success("Image renamed!");
+    } catch (err) {
+      console.error("Error renaming image:", err);
+      toast.error("Failed to rename image.");
+    }
+  }
+
+  const executeSaveDesc = async () => {
+    if (!selectedImage) return;
+
+    try {
+      const newMeta = { ...selectedImage.metadata, description: editDescValue.trim() };
+      const { error } = await supabase.from('media').update({ metadata: newMeta }).eq('id', selectedImage.id);
+
+      if (error) throw error;
+
+      const updatedImage = { ...selectedImage, metadata: newMeta, description: editDescValue.trim() };
+
+      setSelectedImage(updatedImage);
+      setItems(items.map(item => item.id === selectedImage.id ? updatedImage : item));
+      setIsEditingDesc(false);
+      toast.success("Description updated!");
+    } catch (err) {
+      console.error("Error updating description:", err);
+      toast.error("Failed to update description.");
+    }
   }
 
   const executeDelete = async () => {
@@ -221,9 +288,10 @@ export default function GalleryPage() {
       setShowDeleteConfirm(false);
       setSelectedImage(null);
       fetchMedia();
+      toast.success("Asset deleted successfully!");
     } catch (error) {
       console.error("Error deleting asset:", error);
-      alert("Failed to delete asset. Check console for details.");
+      toast.error("Failed to delete asset. Check console for details.");
     } finally {
       setIsDeleting(false);
     }
@@ -231,37 +299,98 @@ export default function GalleryPage() {
 
   const executeBulkDelete = async () => {
     if (selectedIds.length === 0) return;
-    if (!confirm(`Are you sure you want to delete ${selectedIds.length} assets? This cannot be undone.`)) return;
+    
+    toast((t) => (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm">Are you sure you want to delete <strong>{selectedIds.length}</strong> assets? This cannot be undone.</p>
+        <div className="flex gap-2">
+          <button 
+            className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={async () => {
+              toast.dismiss(t.id);
+              setIsDeleting(true);
+              try {
+                const itemsToDelete = items.filter(i => selectedIds.includes(i.id));
+                const paths = itemsToDelete.map(i => i.file_path);
+                const { error: storageError } = await supabase.storage.from('vault-media').remove(paths);
+                if (storageError) throw storageError;
+                const { error: dbError } = await supabase.from('media').delete().in('id', selectedIds);
+                if (dbError) throw dbError;
+                setSelectionMode(false);
+                setSelectedIds([]);
+                fetchMedia();
+                toast.success(`${selectedIds.length} assets deleted.`);
+              } catch (error) {
+                console.error("Error:", error);
+                toast.error("Failed to delete assets.");
+              } finally {
+                setIsDeleting(false);
+              }
+            }}>Delete</button>
+          <button 
+            className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={() => toast.dismiss(t.id)}>Cancel</button>
+        </div>
+      </div>
+    ), { duration: 60000, id: 'bulk-delete' });
+  }
 
-    setIsDeleting(true);
+  const executeBulkDownload = async () => {
+    if (selectedIds.length === 0) return;
+    setIsDownloading(true);
+    
     try {
-      const itemsToDelete = items.filter(i => selectedIds.includes(i.id));
-      const paths = itemsToDelete.map(i => i.file_path);
-
-      // 1. Delete from Supabase Storage
-      const { error: storageError } = await supabase.storage
-        .from('vault-media')
-        .remove(paths);
+      const zip = new JSZip();
+      const folderName = selectedEventId 
+        ? folders.find(f => f.id === selectedEventId)?.title || "VIT_Vault_Export" 
+        : "VIT_Vault_Export";
         
-      if (storageError) throw storageError;
-
-      // 2. Delete from Database
-      const { error: dbError } = await supabase
-        .from('media')
-        .delete()
-        .in('id', selectedIds);
+      const folder = zip.folder(folderName);
+      const itemsToDownload = items.filter(i => selectedIds.includes(i.id));
+      
+      // Fetch all images and add to zip
+      const fetchPromises = itemsToDownload.map(async (item) => {
+        const response = await fetch(item.url);
+        if (!response.ok) throw new Error("Failed to fetch image data");
+        const blob = await response.blob();
         
-      if (dbError) throw dbError;
-
-      // 3. Update UI
+        // Extract filename from the Supabase path (e.g., folderId/filename.jpg)
+        const filename = item.file_path.split('/').pop() || `image-${item.id.slice(0, 6)}.jpg`;
+        folder.file(filename, blob);
+      });
+      
+      await Promise.all(fetchPromises);
+      
+      // Generate and download zip
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, `${folderName}.zip`);
+      
+      // Clear selection
       setSelectionMode(false);
       setSelectedIds([]);
-      fetchMedia();
+      toast.success(`ZIP downloaded: ${folderName}`);
     } catch (error) {
-      console.error("Error deleting assets:", error);
-      alert("Failed to delete some assets. Check console for details.");
+      console.error("Bulk download failed:", error);
+      toast.error("Failed to create ZIP archive.");
     } finally {
-      setIsDeleting(false);
+      setIsDownloading(false);
+    }
+  }
+
+  const executeSingleDownload = async (item) => {
+    setIsDownloading(true);
+    try {
+      const response = await fetch(item.url);
+      if (!response.ok) throw new Error("Failed to fetch image data");
+      const blob = await response.blob();
+      
+      const filename = item.file_path.split('/').pop() || `vit-vault-${item.id.slice(0, 6)}.jpg`;
+      saveAs(blob, filename);
+    } catch (error) {
+      console.error("Single download failed:", error);
+      toast.error("Failed to download image.");
+    } finally {
+      setIsDownloading(false);
     }
   }
 
@@ -303,57 +432,68 @@ export default function GalleryPage() {
         localStorage.setItem('vault_thumbnails', JSON.stringify(local));
       }
       
-      alert("Folder thumbnail updated successfully!");
+      toast.success("Folder thumbnail updated successfully!");
       fetchMedia();
     } catch (err) {
       console.error("Error setting thumbnail:", err);
-      alert("Failed to update folder thumbnail. Check console.");
+      toast.error("Failed to update folder thumbnail.");
     } finally {
       setIsUpdatingThumbnail(false);
     }
   }
 
-  const executeDeleteFolder = async () => {
-    if (!selectedEventId) return;
-    const folder = folders.find(f => f.id === selectedEventId);
+  const executeDeleteFolder = async (targetFolderId = null) => {
+    const fId = targetFolderId || selectedEventId;
+    if (!fId) return;
+    const folder = folders.find(f => f.id === fId);
     if (!folder) return;
 
-    if (!confirm(`Are you sure you want to delete the ENTIRE folder "${folder.title}" and all its ${folder.count} images? This cannot be undone.`)) return;
+    toast((t) => (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm">Delete the ENTIRE folder <strong>{folder.title}</strong> and all its {folder.count} images? This cannot be undone.</p>
+        <div className="flex gap-2">
+          <button 
+            className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={async () => {
+              toast.dismiss(t.id);
+              setIsDeleting(true);
+              try {
+                // 1. Delete all media files from storage
+                const { data: mediaItems } = await supabase.from('media').select('file_path').eq('event_id', fId);
+                if (mediaItems && mediaItems.length > 0) {
+                  const paths = mediaItems.map(m => m.file_path);
+                  await supabase.storage.from('vault-media').remove(paths);
+                }
+                // 2. ALWAYS delete media DB rows first (FK constraint)
+                const { error: mediaErr } = await supabase.from('media').delete().eq('event_id', fId);
+                if (mediaErr) console.warn('Media row cleanup:', mediaErr.message);
 
-    setIsDeleting(true);
-    try {
-      // 1. Fetch all media in this folder to delete from storage
-      const { data: mediaItems } = await supabase
-        .from('media')
-        .select('file_path')
-        .eq('event_id', selectedEventId);
-
-      if (mediaItems && mediaItems.length > 0) {
-        const paths = mediaItems.map(i => i.file_path);
-        const { error: storageError } = await supabase.storage
-          .from('vault-media')
-          .remove(paths);
-        if (storageError) throw storageError;
-      }
-
-      // 2. Delete the event (cascades to media table in DB)
-      const { error: eventError } = await supabase
-        .from('events')
-        .delete()
-        .eq('id', selectedEventId);
-        
-      if (eventError) throw eventError;
-
-      // 3. Update UI
-      setSelectedEventId(null);
-      setViewMode('FOLDERS');
-      fetchMedia();
-    } catch (error) {
-      console.error("Error deleting folder:", error);
-      alert("Failed to delete folder. Check console for details.");
-    } finally {
-      setIsDeleting(false);
-    }
+                // 3. Delete the event/folder row
+                const { error: dbError } = await supabase.from('events').delete().eq('id', fId);
+                if (dbError) {
+                  console.error('Event delete failed:', dbError);
+                  throw dbError;
+                }
+                // 4. Reset UI
+                if (selectedEventId === fId) {
+                  setSelectedEventId(null);
+                  setViewMode('FOLDERS');
+                }
+                fetchMedia();
+                toast.success(`Folder "${folder.title}" deleted!`);
+              } catch (error) {
+                console.error("Error deleting folder:", error);
+                toast.error(`Failed to delete folder: ${error.message}`);
+              } finally {
+                setIsDeleting(false);
+              }
+            }}>Delete Folder</button>
+          <button 
+            className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold w-full transition-colors"
+            onClick={() => toast.dismiss(t.id)}>Cancel</button>
+        </div>
+      </div>
+    ), { duration: 60000, id: 'folder-delete' });
   }
 
   return (
@@ -380,13 +520,15 @@ export default function GalleryPage() {
               <span className="material-symbols-outlined absolute left-3 text-slate-400">search</span>
               <input
                 className="w-full bg-[#3b3bed]/10 border-none rounded-xl pl-11 pr-4 py-2 text-sm focus:ring-2 focus:ring-[#3b3bed]/50 transition-all text-white placeholder:text-slate-500 outline-none"
-                placeholder="Search event folders..."
+                placeholder="Search tags, images, or folders..."
                 type="text"
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   if (e.target.value) {
                     setSelectedEventId(null);
+                    setViewMode('GRID');
+                  } else {
                     setViewMode('FOLDERS');
                   }
                 }}
@@ -525,7 +667,7 @@ export default function GalleryPage() {
                         </button>
                         { (isCreator || isAdmin) && (
                           <button 
-                            onClick={executeDeleteFolder}
+                            onClick={() => executeDeleteFolder()}
                             disabled={isDeleting}
                             className="px-4 py-2 bg-red-500/10 text-red-500 border border-red-500/20 rounded-xl text-sm font-bold transition-all hover:bg-red-500/20 flex items-center gap-2"
                           >
@@ -588,15 +730,22 @@ export default function GalleryPage() {
                 </div>
                 <div className="flex items-center gap-3">
                   <button 
-                    onClick={() => {
-                      const selectedItems = items.filter(i => selectedIds.includes(i.id));
-                      selectedItems.forEach(i => window.open(i.url, '_blank'));
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-bold transition-all"
+                    onClick={executeBulkDownload}
+                    disabled={isDownloading}
+                    className="flex items-center gap-2 px-4 py-2 bg-[#3b3bed]/80 hover:bg-[#3b3bed] text-white rounded-xl text-sm font-bold transition-all disabled:opacity-50"
                   >
-                    <span className="material-symbols-outlined text-sm">download</span> Download
+                    <span className="material-symbols-outlined text-sm">
+                      {isDownloading ? 'hourglass_empty' : 'download'}
+                    </span> 
+                    {isDownloading ? 'Zipping...' : 'Download Selected'}
                   </button>
-                  { (user?.email === 'raunak.baweja@vit.edu.in') && (
+                  { (() => {
+                    const folder = selectedEventId ? folders.find(f => f.id === selectedEventId) : null;
+                    const isCreator = folder?.created_by === user?.id;
+                    const isAdmin = user?.email === 'raunak.baweja@vit.edu.in';
+                    const isCollaborator = folder?.collaborators?.includes(user?.email?.toLowerCase());
+                    return (isCreator || isAdmin || isCollaborator || !selectedEventId);
+                  })() && (
                     <button 
                       onClick={executeBulkDelete}
                       disabled={isDeleting}
@@ -762,10 +911,16 @@ export default function GalleryPage() {
 
                     {/* Bottom: Info */}
                     <div className="space-y-2">
-                       <div className="flex flex-wrap gap-2">
+                       <div className="flex flex-wrap gap-1.5">
                         {item.tags.map(tag => (
                           <span key={tag.label} className={`px-2 py-0.5 rounded-md ${tag.color} text-[10px] font-bold text-white uppercase tracking-wider`}>
                             {tag.label}
+                          </span>
+                        ))}
+                        {item.aiTags?.slice(0, 3).map(tag => (
+                          <span key={tag} className="px-2 py-0.5 rounded-md bg-purple-600/80 text-[10px] font-bold text-white uppercase tracking-wider flex items-center gap-0.5">
+                            <span className="material-symbols-outlined" style={{fontSize: '10px'}}>auto_awesome</span>
+                            {tag}
                           </span>
                         ))}
                       </div>
@@ -838,15 +993,16 @@ export default function GalleryPage() {
                 >
                   <span className="material-symbols-outlined">close</span>
                 </button>
-                <a 
-                  href={selectedImage.url}
-                  download
-                  target="_blank"
-                  rel="noreferrer"
-                  className="absolute bottom-4 right-4 px-4 py-2 bg-[#3b3bed]/80 hover:bg-[#3b3bed] text-white rounded-xl flex items-center gap-2 backdrop-blur-md transition-colors font-bold text-sm"
+                <button 
+                  onClick={() => executeSingleDownload(selectedImage)}
+                  disabled={isDownloading}
+                  className="absolute bottom-4 right-4 px-4 py-2 bg-[#3b3bed]/80 hover:bg-[#3b3bed] text-white rounded-xl flex items-center gap-2 backdrop-blur-md transition-colors font-bold text-sm disabled:opacity-50"
                 >
-                  <span className="material-symbols-outlined text-sm">download</span> Download Original
-                </a>
+                  <span className="material-symbols-outlined text-sm">
+                    {isDownloading ? 'hourglass_empty' : 'download'}
+                  </span> 
+                  {isDownloading ? 'Downloading...' : 'Download Original'}
+                </button>
               </div>
               
               {/* Details Section */}
@@ -859,10 +1015,104 @@ export default function GalleryPage() {
                       </span>
                     ))}
                   </div>
-                  <h2 className="text-2xl font-bold text-white mb-2">{selectedImage.title}</h2>
-                  <p className="text-sm text-slate-400 leading-relaxed">
-                    {selectedImage.description}
-                  </p>
+                  {selectedImage.aiTags?.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 flex items-center gap-1">
+                        <span className="material-symbols-outlined" style={{fontSize: '12px'}}>auto_awesome</span> AI-Generated Tags
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedImage.aiTags.map(tag => (
+                          <span key={tag} className="px-2.5 py-1 rounded-lg bg-purple-600/20 text-purple-300 border border-purple-500/20 text-[10px] font-bold uppercase tracking-wider">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="flex items-center gap-3 mb-2 group/title">
+                    {isEditingName ? (
+                      <div className="flex gap-2 w-full mt-2">
+                        <input 
+                          type="text" 
+                          value={editNameValue} 
+                          onChange={(e) => setEditNameValue(e.target.value)} 
+                          className="flex-1 bg-black/40 border border-white/20 rounded-lg px-3 py-1.5 text-white text-base font-bold outline-none focus:ring-2 focus:ring-[#3b3bed]"
+                          placeholder="Enter customized name..."
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') executeSaveName();
+                            if (e.key === 'Escape') setIsEditingName(false);
+                          }}
+                        />
+                        <button onClick={executeSaveName} className="p-1.5 bg-[#3b3bed] text-white rounded-lg hover:bg-[#3b3bed]/80 transition-colors">
+                          <span className="material-symbols-outlined text-sm font-bold">check</span>
+                        </button>
+                        <button onClick={() => setIsEditingName(false)} className="p-1.5 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors">
+                          <span className="material-symbols-outlined text-sm font-bold">close</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <h2 className="text-2xl font-bold text-white leading-tight mt-1">{selectedImage.custom_name || selectedImage.eventTitle}</h2>
+                        { (selectedImage.uploader_id === user?.id || 
+                           user?.email === 'raunak.baweja@vit.edu.in' || 
+                           (folders.find(f => f.id === selectedImage.event_id)?.created_by === user?.id) || 
+                           (folders.find(f => f.id === selectedImage.event_id)?.collaborators?.includes(user?.email?.toLowerCase()))) && (
+                          <button 
+                            onClick={() => { setIsEditingName(true); setEditNameValue(selectedImage.custom_name || ''); }}
+                            className="bg-white/5 opacity-80 hover:bg-[#3b3bed] hover:opacity-100 p-1.5 rounded-lg text-slate-300 hover:text-white transition-all mt-1"
+                            title="Rename image"
+                          >
+                            <span className="material-symbols-outlined text-sm">edit</span>
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="flex items-start gap-3 mt-2 group/desc">
+                    {isEditingDesc ? (
+                      <div className="flex flex-col gap-2 w-full mt-2">
+                        <textarea 
+                          value={editDescValue} 
+                          onChange={(e) => setEditDescValue(e.target.value)} 
+                          className="w-full bg-black/40 border border-white/20 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none focus:ring-2 focus:ring-[#3b3bed] min-h-[80px] resize-none"
+                          placeholder="Enter a description..."
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') setIsEditingDesc(false);
+                          }}
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <button onClick={() => setIsEditingDesc(false)} className="px-3 py-1.5 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors text-xs font-bold">
+                            Cancel
+                          </button>
+                          <button onClick={executeSaveDesc} className="px-3 py-1.5 bg-[#3b3bed] text-white rounded-lg hover:bg-[#3b3bed]/80 transition-colors text-xs font-bold">
+                            Save Description
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-slate-400 leading-relaxed flex-1">
+                          {selectedImage.description || <span className="italic opacity-50">No description provided.</span>}
+                        </p>
+                        { (selectedImage.uploader_id === user?.id || 
+                           user?.email === 'raunak.baweja@vit.edu.in' || 
+                           (folders.find(f => f.id === selectedImage.event_id)?.created_by === user?.id) || 
+                           (folders.find(f => f.id === selectedImage.event_id)?.collaborators?.includes(user?.email?.toLowerCase()))) && (
+                          <button 
+                            onClick={() => { setIsEditingDesc(true); setEditDescValue(selectedImage.description === 'No description provided.' ? '' : (selectedImage.description || '')); }}
+                            className="bg-white/5 opacity-80 hover:bg-[#3b3bed] hover:opacity-100 p-1.5 rounded-lg text-slate-300 hover:text-white transition-all shrink-0"
+                            title="Edit description"
+                          >
+                            <span className="material-symbols-outlined text-sm">edit</span>
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 <div className="h-px bg-white/10 w-full" />

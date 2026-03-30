@@ -2,13 +2,18 @@ import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
+import { MESSAGES } from '../lib/utils'
+import toast from 'react-hot-toast'
 
 export default function UploadModal({ isOpen, onClose, folderId = null }) {
   const { user } = useAuth()
   const fileInputRef = useRef(null)
   
+  const [uploadType, setUploadType] = useState('DIRECT')
   const [eventType, setEventType] = useState('INSTITUTIONAL')
   const [eventName, setEventName] = useState('')
+  const [eventDate, setEventDate] = useState('')
+  const [imageName, setImageName] = useState('')
   const [description, setDescription] = useState('')
   const [files, setFiles] = useState([])
   
@@ -25,7 +30,10 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
       if (folderId) {
         fetchFolderDetails()
       } else {
+        setUploadType('DIRECT')
         setEventName('')
+        setEventDate('')
+        setImageName('')
         setEventType('INSTITUTIONAL')
       }
     }
@@ -61,7 +69,7 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
       const isCollaborator = folderData.collaborators?.includes(user?.email?.toLowerCase());
 
       if (!isCreator && !isAdmin && !isCollaborator) {
-        setErrorMsg("You don't have permission to add images to this folder.")
+        setErrorMsg(MESSAGES.ERRORS.NO_PERMISSION_ADD_IMAGES)
       }
     }
   }
@@ -75,13 +83,31 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
   }
 
   const handleUpload = async () => {
-    if (!eventName.trim()) {
-      setErrorMsg("Please enter a Folder/Event Name")
+    const finalEventName = (!folderId && uploadType === 'DIRECT') 
+      ? `Standalone Uploads (${eventType === 'COMMITTEE' ? 'Committee' : 'Institutional'})` 
+      : eventName.trim();
+    const finalEventType = eventType;
+
+    if (!finalEventName) {
+      setErrorMsg(MESSAGES.ERRORS.EMPTY_FOLDER_NAME)
       return
     }
     if (files.length === 0) {
-      setErrorMsg("Please select at least one file")
+      setErrorMsg(MESSAGES.ERRORS.NO_FILES_SELECTED)
       return
+    }
+
+    if (eventDate) {
+      const selectedDate = new Date(eventDate);
+      const now = new Date();
+      // Reset hours to only compare calendar days
+      selectedDate.setHours(0, 0, 0, 0);
+      now.setHours(0, 0, 0, 0);
+      
+      if (selectedDate > now) {
+        setErrorMsg(MESSAGES.ERRORS.INVALID_DATE_FUTURE);
+        return;
+      }
     }
 
     setIsUploading(true)
@@ -96,12 +122,12 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         const { data: extData, error: extErr } = await supabase
           .from('events')
           .select('id, created_by, collaborators')
-          .eq('title', eventName)
-          .eq('type', eventType)
+          .eq('title', finalEventName)
+          .eq('type', finalEventType)
           .limit(1)
           
         if (extErr && extErr.message.includes('collaborators')) {
-          const fb = await supabase.from('events').select('id, created_by').eq('title', eventName).eq('type', eventType).limit(1)
+          const fb = await supabase.from('events').select('id, created_by').eq('title', finalEventName).eq('type', finalEventType).limit(1)
           existing = fb.data;
         } else if (extData) {
           existing = extData;
@@ -110,17 +136,18 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         if (existing && existing.length > 0) {
           const f = existing[0];
           const isCollaborator = f.collaborators?.includes(user?.email?.toLowerCase());
-          if (f.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in' && !isCollaborator) {
-            throw new Error("A folder with this name already exists and belongs to another user.")
+          const isDirectUpload = uploadType === 'DIRECT';
+          if (!isDirectUpload && f.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in' && !isCollaborator) {
+            throw new Error(MESSAGES.ERRORS.FOLDER_EXISTS_OTHER_USER)
           }
           eventId = existing[0].id
         } else {
           const { data: newEvent, error: eventErr } = await supabase
             .from('events')
             .insert({
-              title: eventName,
-              type: eventType,
-              event_date: new Date().toISOString(),
+              title: finalEventName,
+              type: finalEventType,
+              event_date: eventDate ? new Date(eventDate).toISOString() : new Date().toISOString(),
               organizer: 'VIT Admin',
               created_by: user.id
             })
@@ -149,7 +176,7 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         if (doubleCheck) {
           const isCollaborator = doubleCheck.collaborators?.includes(user?.email?.toLowerCase());
           if (doubleCheck.created_by !== user.id && user.email !== 'raunak.baweja@vit.edu.in' && !isCollaborator) {
-            throw new Error("You don't have permission to modify this folder.")
+            throw new Error(MESSAGES.ERRORS.NO_PERMISSION_FOLDER)
           }
         }
       }
@@ -169,17 +196,51 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         if (uploadError) throw uploadError
 
         // Insert into media table
-        const { error: dbError } = await supabase
+        const { data: mediaRecord, error: dbError } = await supabase
           .from('media')
           .insert({
             event_id: eventId,
             uploader_id: user.id,
             file_path: filePath,
             status: 'APPROVED', // Auto-approving for now so it shows in the gallery
-            metadata: { description }
+            metadata: { 
+              description,
+              custom_name: files.length > 1 && imageName.trim() ? `${imageName.trim()} ${i + 1}` : imageName.trim(),
+              custom_date: eventDate ? new Date(eventDate).toISOString() : null
+            }
           })
+          .select('id')
+          .single()
           
         if (dbError) throw dbError
+
+        // 🧠 Send to AI Microservice for auto-tagging + deduplication + embedding
+        // This is fire-and-forget — the upload finishes immediately while AI processes in background
+        if (mediaRecord?.id) {
+          fetch('http://localhost:5000/api/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              media_id: mediaRecord.id,
+              file_path: filePath
+            })
+          })
+          .then(res => res.json())
+          .then(result => {
+            if (result.status === 'duplicate') {
+              toast.error(`"${file.name}" was rejected. ${MESSAGES.ERRORS.IMAGE_ALREADY_EXISTS}`, { duration: 5000 });
+              window.dispatchEvent(new Event('mediaUploaded'));
+            } else if (result.status === 'error' || result.error) {
+              console.error(`[AI] Processing failed for ${file.name}`, result);
+            } else {
+              console.log(`[AI] Processing complete for ${file.name}:`, result);
+              window.dispatchEvent(new Event('mediaUploaded'));
+            }
+          })
+          .catch(err => {
+            console.warn(`[AI] AI processing skipped or failed for ${file.name}:`, err.message || err);
+          })
+        }
 
         // Update progress
         setUploadProgress(Math.round(((i + 1) / files.length) * 100))
@@ -246,9 +307,28 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
             {/* Left Column: Form Details */}
             <div className="w-full md:w-5/12 p-8 border-r border-white/5 bg-white/[0.02] flex flex-col gap-6">
               
-              {/* Event Type Configuration */}
               {!folderId && (
-                <div className="flex flex-col gap-2">
+                <div className="flex bg-[#1e1e38]/80 p-1.5 rounded-xl border border-white/10 shadow-inner">
+                  <button
+                    onClick={() => setUploadType('DIRECT')}
+                    disabled={isUploading}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold rounded-lg transition-all ${uploadType === 'DIRECT' ? 'bg-[#3b3bed] text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                  >
+                    <span className="material-symbols-outlined text-sm">imagesmode</span> Direct Upload
+                  </button>
+                  <button
+                    onClick={() => setUploadType('FOLDER')}
+                    disabled={isUploading}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold rounded-lg transition-all ${uploadType === 'FOLDER' ? 'bg-[#3b3bed] text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                  >
+                    <span className="material-symbols-outlined text-sm">create_new_folder</span> Create Folder
+                  </button>
+                </div>
+              )}
+
+              {/* Event Type Configuration */}
+              {(!folderId) && (
+                <div className="flex flex-col gap-2 animate-in fade-in slide-in-from-top-4 duration-300">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Event Type</label>
                   <div className="flex gap-2 p-1 bg-[#1e1e38]/50 border border-white/10 rounded-lg">
                     <button
@@ -267,17 +347,21 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
 
               {/* Folder / Event Name */}
               {!folderId ? (
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Folder / Event Name</label>
-                  <input 
-                    type="text" 
-                    value={eventName}
-                    onChange={(e) => setEventName(e.target.value)}
-                    disabled={isUploading}
-                    className="w-full bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white placeholder:text-slate-600 transition-all"
-                    placeholder="e.g., Verve Annual Fest 2024"
-                  />
-                </div>
+                uploadType === 'FOLDER' && (
+                  <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Folder / Event Name</label>
+                      <input 
+                        type="text" 
+                        value={eventName}
+                        onChange={(e) => setEventName(e.target.value)}
+                        disabled={isUploading}
+                        className="w-full bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white placeholder:text-slate-600 transition-all"
+                        placeholder="e.g., Verve Annual Fest 2024"
+                      />
+                    </div>
+                  </div>
+                )
               ) : (
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Target Folder</label>
@@ -289,16 +373,41 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
                 </div>
               )}
 
-              {/* Description */}
-              <div className="flex flex-col gap-2 flex-1">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Asset Description (Optional)</label>
-                <textarea 
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  disabled={isUploading}
-                  className="w-full h-full min-h-[120px] bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white placeholder:text-slate-600 resize-none transition-all"
-                  placeholder="Provide context or a caption for these uploads..."
-                />
+              {/* Detail Inputs */}
+              <div className="flex flex-col gap-4 flex-1">
+                <div className="flex gap-4 w-full">
+                  <div className="flex flex-col gap-2 flex-1">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Image Name (Optional)</label>
+                    <input 
+                      type="text" 
+                      value={imageName}
+                      onChange={(e) => setImageName(e.target.value)}
+                      disabled={isUploading}
+                      className="w-full bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white transition-all placeholder:text-slate-600"
+                      placeholder="e.g., Award Ceremony"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2 flex-1">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Captured Date (Optional)</label>
+                    <input 
+                      type="date" 
+                      value={eventDate}
+                      onChange={(e) => setEventDate(e.target.value)}
+                      disabled={isUploading}
+                      className="w-full bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white transition-all [&::-webkit-calendar-picker-indicator]:invert"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2 flex-1">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Asset Description (Optional)</label>
+                  <textarea 
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    disabled={isUploading}
+                    className="w-full h-full min-h-[80px] bg-[#1e1e38]/50 border border-white/10 rounded-lg px-4 py-3 focus:ring-2 focus:ring-[#3b3bed] outline-none text-white placeholder:text-slate-600 resize-none transition-all"
+                    placeholder="Provide context or a caption for these uploads..."
+                  />
+                </div>
               </div>
 
             </div>
