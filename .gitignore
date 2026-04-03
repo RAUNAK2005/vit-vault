@@ -4,6 +4,7 @@
 # Allow these directories
 !/client/
 !/ai-service/
+!/.github/
 !/.gitignore
 
 # Ignore dependencies & env
