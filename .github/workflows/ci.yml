@@ -2,7 +2,7 @@ name: React Frontend CI
 
 on:
   push:
-    branches: [ "main", "feat-aiservice" ]
+    branches: [ "main", "feat-devops" ]
   pull_request:
     branches: [ "main" ]
 
