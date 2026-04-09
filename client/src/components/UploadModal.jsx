@@ -217,7 +217,8 @@ export default function UploadModal({ isOpen, onClose, folderId = null }) {
         // 🧠 Send to AI Microservice for auto-tagging + deduplication + embedding
         // This is fire-and-forget — the upload finishes immediately while AI processes in background
         if (mediaRecord?.id) {
-          fetch('http://localhost:5000/api/process', {
+          const AI_URL = import.meta.env.VITE_AI_SERVICE_URL || 'http://localhost:5000';
+          fetch(`${AI_URL}/api/process`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
