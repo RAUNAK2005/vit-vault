@@ -37,9 +37,9 @@ def load_model():
 
 
 def get_model():
-    """Get the loaded model. Raises error if not loaded yet."""
+    """Get the loaded model. Loads it if not loaded yet."""
     if _model is None:
-        raise RuntimeError("CLIP model not loaded. Call load_model() first.")
+        load_model()
     return _model, _processor
 
 

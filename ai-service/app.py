@@ -39,8 +39,8 @@ def create_app():
 app = create_app()
 
 # In production, Gunicorn will skip the __main__ block
-# We load the model in the global scope so Gunicorn pre-loads it
-load_model()
+# We no longer load the model in the global scope to save boot RAM
+# load_model()
 
 if __name__ == "__main__":
     
