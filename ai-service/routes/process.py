@@ -88,8 +88,8 @@ def process_media():
             return jsonify({
                 "status": "duplicate",
                 "message": "This image is a duplicate of an existing upload",
-                "matching_id": dup_result["matching_id"],
-                "distance": dup_result["distance"]
+                "matching_id": str(dup_result["matching_id"]),
+                "distance": int(dup_result["distance"])
             }), 200
         
         # ─── Step 3: Auto-Tagging ───

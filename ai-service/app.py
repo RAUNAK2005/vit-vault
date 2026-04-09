@@ -35,12 +35,14 @@ def create_app():
     return app
 
 
+# Create the Flask app globally for WSGI servers like Gunicorn
+app = create_app()
+
+# In production, Gunicorn will skip the __main__ block
+# We load the model in the global scope so Gunicorn pre-loads it
+load_model()
+
 if __name__ == "__main__":
-    # Load the CLIP model ONCE at startup (takes ~1-2 min first time)
-    load_model()
-    
-    # Create and run the Flask app
-    app = create_app()
     
     print(f"\n{'='*60}")
     print(f"  VIT Media Vault — AI Engine")
