@@ -89,8 +89,8 @@ def process_media():
             return jsonify({
                 "status": "duplicate",
                 "message": "This image is a duplicate of an existing upload",
-                "matching_id": dup_result["matching_id"],
-                "distance": dup_result["distance"]
+                "matching_id": str(dup_result["matching_id"]),
+                "distance": int(dup_result["distance"])
             }), 200
         
         # ─── Step 3: Auto-Tagging ───
@@ -122,9 +122,8 @@ def process_media():
             }
         }
         
-        # Only include embedding if pgvector is enabled
-        # (we'll add this later when pgvector extension is installed)
-        # update_data["image_embedding"] = embedding
+        # pgvector is enabled — save embedding for semantic search
+        update_data["image_embedding"] = embedding
         
         supabase.table("media").update(update_data).eq("id", media_id).execute()
         
